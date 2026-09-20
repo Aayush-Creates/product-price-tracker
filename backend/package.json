@@ -6,7 +6,7 @@
     "start": "node src/server.js",
     "dev": "nodemon src/server.js",
     "test:scraper": "node scripts/testScraper.js",
-    "headed": "node scripts/headedScrape.js"
+    "headed": "node scripts/demoHeadedScrape.js"
   },
   "keywords": [],
   "author": "",
