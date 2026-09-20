@@ -141,8 +141,31 @@ async function scrapeWithBrowser(productUrl, options = {}) {
 
         await dismissCookieIfPresent(page);
 
-        // Re-establish hover before each attempt.
-        await hoverPriceArea(page, priceBlock, priceStatus, 5000);
+        // ==================================================
+        // RE-ESTABLISH HOVER BEFORE EACH ATTEMPT
+        // ==================================================
+
+        try {
+          await hoverPriceArea(
+            page,
+            priceBlock,
+            priceStatus,
+            attempt === 1 ? TIMEOUTS.hoverState : 10000,
+          );
+        } catch (error) {
+          console.log(
+            `[SCRAPER] Hover recovery failed on attempt ${attempt}: ${error.message}`,
+          );
+
+          if (attempt < TIMEOUTS.revealAttempts) {
+            console.log("[SCRAPER] Continuing to next reveal attempt...");
+
+            await page.waitForTimeout(500);
+            continue;
+          }
+
+          throw error;
+        }
 
         console.log("[SCRAPER] Hovering over Reveal price button...");
 
@@ -163,6 +186,7 @@ async function scrapeWithBrowser(productUrl, options = {}) {
           console.log("[SCRAPER] Reveal price button did not become enabled");
 
           if (attempt < TIMEOUTS.revealAttempts) {
+            await page.waitForTimeout(500);
             continue;
           }
 
@@ -200,7 +224,6 @@ async function scrapeWithBrowser(productUrl, options = {}) {
 
         if (priceRevealed) {
           console.log("[SCRAPER] Price successfully revealed");
-
           break;
         }
 
@@ -211,7 +234,7 @@ async function scrapeWithBrowser(productUrl, options = {}) {
             "[SCRAPER] Re-establishing hover and retrying Reveal Price...",
           );
 
-          await page.waitForTimeout(300);
+          await page.waitForTimeout(500);
         }
       }
 
@@ -280,47 +303,67 @@ async function scrapeWithBrowser(productUrl, options = {}) {
 async function hoverPriceArea(page, priceBlock, priceStatus, timeout) {
   await dismissCookieIfPresent(page);
 
-  const box = await priceBlock.boundingBox();
+  const start = Date.now();
 
-  if (!box) {
-    throw new Error("Price block has no bounding box");
+  while (Date.now() - start < timeout) {
+    try {
+      const box = await priceBlock.boundingBox();
+
+      if (!box) {
+        await page.waitForTimeout(300);
+        continue;
+      }
+
+      console.log("[SCRAPER] Moving mouse outside price block...");
+
+      await page.mouse.move(10, 10, {
+        steps: 10,
+      });
+
+      await page.waitForTimeout(200);
+
+      console.log("[SCRAPER] Hovering over price block...");
+
+      await page.mouse.move(box.x + 20, box.y + box.height / 2, {
+        steps: 30,
+      });
+
+      await page.waitForTimeout(300);
+
+      await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2, {
+        steps: 30,
+      });
+
+      console.log("[SCRAPER] Hovered over price block");
+
+      const ready = await waitForInteractivePriceState(
+        page,
+        priceStatus,
+        Math.min(2500, timeout),
+        priceBlock,
+      );
+
+      if (ready) {
+        return true;
+      }
+
+      console.log(
+        `[SCRAPER] Hover did not activate price area yet. ` +
+          `Current status: "${await safeText(priceStatus)}"`,
+      );
+
+      await page.waitForTimeout(500);
+    } catch (error) {
+      console.log(`[SCRAPER] Hover retry error: ${error.message}`);
+
+      await page.waitForTimeout(500);
+    }
   }
 
-  console.log("[SCRAPER] Moving mouse outside price block...");
-
-  await page.mouse.move(10, 10, {
-    steps: 10,
-  });
-
-  await page.waitForTimeout(150);
-
-  console.log("[SCRAPER] Hovering over price block...");
-
-  await page.mouse.move(box.x + 20, box.y + box.height / 2, {
-    steps: 30,
-  });
-
-  await page.waitForTimeout(250);
-
-  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2, {
-    steps: 30,
-  });
-
-  console.log("[SCRAPER] Hovered over price block");
-
-  const ready = await waitForInteractivePriceState(
-    page,
-    priceStatus,
-    timeout,
-    priceBlock,
+  throw new Error(
+    `Price area did not enter interactive state. ` +
+      `Current status: "${await safeText(priceStatus)}"`,
   );
-
-  if (!ready) {
-    throw new Error(
-      `Price area did not enter interactive state. ` +
-        `Current status: "${await safeText(priceStatus)}"`,
-    );
-  }
 }
 
 async function waitForInteractivePriceState(
@@ -342,12 +385,16 @@ async function waitForInteractivePriceState(
       return true;
     }
 
-    const box = await priceBlock.boundingBox();
+    try {
+      const box = await priceBlock.boundingBox();
 
-    if (box) {
-      await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2, {
-        steps: 10,
-      });
+      if (box) {
+        await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2, {
+          steps: 10,
+        });
+      }
+    } catch (error) {
+      // DOM may temporarily update.
     }
 
     await page.waitForTimeout(200);
@@ -579,6 +626,7 @@ function parsePrice(value) {
    * Remove negative sign if present.
    * Product prices should be positive.
    */
+
   cleaned = cleaned.replace(/-/g, "");
 
   const hasComma = cleaned.includes(",");
@@ -672,6 +720,7 @@ function parsePrice(value) {
      * 5.963 is a thousands-formatted price,
      * not ₹5.963 for this ecommerce site.
      */
+
     cleaned = cleaned.replace(/\./g, "");
 
     const parsed = Number(cleaned);
@@ -922,11 +971,8 @@ async function logButtonState(button, label) {
   try {
     console.log(`[SCRAPER] ${label} button state:`, {
       disabled: await button.isDisabled(),
-
       disabledAttribute: await button.getAttribute("disabled"),
-
       ariaDisabled: await button.getAttribute("aria-disabled"),
-
       className: await button.getAttribute("class"),
     });
   } catch (error) {
